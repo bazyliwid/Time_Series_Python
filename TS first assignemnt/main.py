@@ -6,6 +6,10 @@ import statsmodels.api as sm
 from statsmodels.tsa.stattools import acf, pacf
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tsa.arima_process import arma_acf
+from statsmodels.stats.stattools import jarque_bera
+import math
+from itertools import groupby
+from operator import itemgetter
 
 # To run: python main.py
 
@@ -96,6 +100,7 @@ plt.legend()
 # plt.grid(True)
 plt.tight_layout()
 plt.show()
+
 
 #################################################################################################################
 # SEASON INVESTIGATION 
@@ -221,6 +226,8 @@ print(model_diff.summary())
 
 wald_test = model_diff.f_test("DREC - EXP = 0") 
 print(wald_test)
+#################################################################################################################
+# MAT BLAME 
 
 # The code below generates the empirical results for the ACF, PACF, and Ljung–Box test on the truncated sample
 
@@ -304,23 +311,277 @@ sm.graphics.tsa.plot_pacf(ts2, lags=nlags, ax=axes[1])
 plt.tight_layout()
 plt.savefig('/Users/bazyliwidawski/Documents/Block 5, Year 3/Time Series Analysis/Python replication/ACF_PACF_FULL.png') 
 
-filtered2 = data_idx.loc['1993Q1':'2009Q4'].reset_index(drop=True)
+filtered2 = data_idx.loc['1992Q2':'2009Q4']
 ts3 = np.log(filtered2['RSFHFS']).diff().dropna()
 
 # The code below estimates AR(p) and MA(q) models for p,q=0,1,2,3 and records the corresponding AIC and BIC values
 
+
 model_IC_score = pd.DataFrame(columns=['MA_AIC', 'MA_BIC', 'AR_AIC', 'AR_BIC'])
 
 for i in range(4):
-    ar_model = sm.tsa.ARIMA(ts3, order=(i,0,0)).fit()
-    ma_model = sm.tsa.ARIMA(ts3, order=(0,0,i)).fit()
+    dataf = ts3.loc['1993Q1':'2009Q4']
+    ar_model = sm.tsa.ARIMA(dataf, order=(i,0,0)).fit()
+    ma_model = sm.tsa.ARIMA(dataf, order=(0,0,i)).fit()
+    print(ar_model.summary())
+    print(ma_model.summary())
     model_IC_score.loc[i] = [ma_model.aic, ma_model.bic, ar_model.aic, ar_model.bic]
 
 print(model_IC_score)
 
-ar2_model = sm.tsa.ARIMA(ts3, order=(2,0,0)).fit()
+dataf = ts3.loc['1993Q1':'2009Q4']
+ar2_model = sm.tsa.ARIMA(dataf, order=(2,0,0)).fit()
 r_1, r_2 = ar2_model.arroots
 print(r_1, r_2)
 phi1, phi2 = ar2_model.params['ar.L1'], ar2_model.params['ar.L2']
 theoretical_acf = arma_acf([1, -phi1, -phi2], [1], lags=20)
 print(theoretical_acf)
+
+############################################################################
+lags       = 20          # number of lags to display
+series     = dataf       # <- the log-diff series you gave to ar2_model
+bar_width  = 0.35        # skinny bar width
+
+# ---------------------------------------------------------------
+# 2) empirical ACF / PACF
+# ---------------------------------------------------------------
+emp_acf  = acf(series,  nlags=lags, fft=False)
+emp_pacf = pacf(series, nlags=lags, method='ywmle')
+
+# ---------------------------------------------------------------
+# 3) theoretical ACF / PACF of AR(2)
+# ---------------------------------------------------------------
+phi1, phi2 = ar2_model.params[['ar.L1', 'ar.L2']]
+
+# ask for one extra lag so theo_acf[1:] has exactly `lags` points
+theo_acf = arma_acf(ar=[1, -phi1, -phi2], ma=[1], lags=lags + 1)
+
+theo_pacf = np.zeros(lags + 1)
+theo_pacf[1] = phi1
+theo_pacf[2] = phi2 / (1 - phi1**2)   # exact AR(2) PACF at lag 2
+# lags ≥ 3 stay at 0
+
+# ---------------------------------------------------------------
+# 4) plotting
+# ---------------------------------------------------------------
+fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+lags_idx = np.arange(1, lags + 1)
+
+# ---------- ACF panel ------------------------------------------
+axes[0].bar(lags_idx, emp_acf[1:], width=bar_width,
+            color='steelblue', label='Empirical')
+
+axes[0].plot(lags_idx, theo_acf[1:], color='red',
+             linewidth=1.8, label='Theoretical')
+
+axes[0].set_ylim(-0.4, 1.2)
+axes[0].set_xlim(0.5, lags + 0.5)
+axes[0].set_ylabel('Autocorrelation')
+axes[0].legend(loc='upper right')
+
+# ---------- PACF panel -----------------------------------------
+axes[1].bar(lags_idx, emp_pacf[1:], width=bar_width,
+            color='steelblue', label='Empirical')
+
+# red theoretical PACF line:
+# • centre of bar 1  ➔  centre of bar 2  ➔  0 at lag 3  ➔  stays at 0
+x_theo = np.concatenate(([1, 2], np.arange(3, lags + 1)))
+y_theo = np.concatenate((
+            [theo_pacf[1], theo_pacf[2]],
+            np.zeros(lags - 2)
+         ))
+axes[1].plot(x_theo, y_theo,
+             color='red', linewidth=1.8, label='Theoretical')
+
+axes[1].set_ylim(-0.5, 1.0)
+axes[1].set_xlim(0.5, lags + 0.5)
+axes[1].set_xlabel('Lag')
+axes[1].set_ylabel('Partial autocorrelation')
+axes[1].legend(loc='upper right')
+
+# ---------- output ---------------------------------------------
+plt.tight_layout()
+plt.savefig('ACF_PACF_theoretical_vs_empirical_AR2.png', dpi=300)
+plt.show()
+
+################################################################################################################################################
+residuals = ar2_model.resid
+residuals_squared = np.square(ar2_model.resid)
+
+
+acf_vals, acf_confint = acf(residuals, nlags=20, alpha=0.05, fft=False)
+emp_pacf = pacf(residuals, nlags=lags, method='ywmle')
+lb_test = acorr_ljungbox(residuals, lags=lags, return_df=True)
+
+
+table = pd.DataFrame({
+    'lag':            lags,
+    'ACF':            acf_vals[1:],           # drop lag=0
+    'ACF_lower95':    acf_confint[1:, 0],
+    'ACF_upper95':    acf_confint[1:, 1],
+    'PACF':           pacf_vals[1:],          # drop lag=0
+    'PACF_lower95':   pacf_confint[1:, 0],
+    'PACF_upper95':   pacf_confint[1:, 1],
+    'Q-Stat':         lb_test['lb_stat'].values,
+    'Prob':           lb_test['lb_pvalue'].values,
+})
+
+print(table)
+
+acf_vals, acf_confint = acf(residuals_squared, nlags=20, alpha=0.05, fft=False)
+emp_pacf = pacf(residuals_squared, nlags=lags, method='ywmle')
+lb_test = acorr_ljungbox(residuals_squared, lags=lags, return_df=True)
+
+
+table = pd.DataFrame({
+    'lag':            lags,
+    'ACF':            acf_vals[1:],           # drop lag=0
+    'ACF_lower95':    acf_confint[1:, 0],
+    'ACF_upper95':    acf_confint[1:, 1],
+    'PACF':           pacf_vals[1:],          # drop lag=0
+    'PACF_lower95':   pacf_confint[1:, 0],
+    'PACF_upper95':   pacf_confint[1:, 1],
+    'Q-Stat':         lb_test['lb_stat'].values,
+    'Prob':           lb_test['lb_pvalue'].values,
+})
+
+print(table)
+
+def test_normality(growthRate):
+    mean = growthRate.mean()
+    median = growthRate.median()
+    mn, mx = growthRate.min(), growthRate.max()
+    std = growthRate.std()
+    skew = growthRate.skew()
+    kurt = growthRate.kurtosis()
+    jb_stat, jb_pvalue, jb_skew, jb_kurt = jarque_bera(growthRate)
+
+    print(jarque_bera(growthRate))
+
+    fig, (ax_hist, ax_stats) = plt.subplots(1, 2, figsize=(12, 5),
+                                            gridspec_kw={'width_ratios': [3, 1]})
+
+    # Histogram with density=True to match the PDF scale
+    count, bins, ignored = ax_hist.hist(growthRate, bins=30, density=True, color='skyblue', edgecolor='black', alpha=0.7, label='Histogram')
+
+    # Normal distribution curve
+    x = np.linspace(min(bins), max(bins), 1000)
+    normal_pdf = (1 / (std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mean) / std) ** 2)
+    ax_hist.plot(x, normal_pdf, 'r-', label='Normal')
+
+    ax_hist.set_xlabel('Growth rate (%)')
+    ax_hist.set_ylabel('Density')
+    ax_hist.legend()
+
+    # Statistics box
+    ax_stats.axis('off')
+    text = (
+        f'N         {len(growthRate)}\n'
+        f'Mean      {mean:8.4f}\n'
+        f'Median    {median:8.4f}\n'
+        f'Max       {mx:8.4f}\n'
+        f'Min       {mn:8.4f}\n'
+        f'Std. Dev. {std:8.4f}\n'
+        f'Skewness  {jb_skew:8.4f}\n'
+        f'Kurtosis  {jb_kurt:8.4f}\n'
+        f'Jarque-Bera  {jb_stat:8.2f}\n'
+        f'Prob(JB)     {jb_pvalue:.6f}'
+    )
+    ax_stats.text(0.05, 0.95, text, transform=ax_stats.transAxes,
+                  fontsize=10, va='top', family='monospace')
+
+    plt.tight_layout()
+    plt.show()
+
+# Test for normality for the whole time series 
+test_normality(residuals)
+
+################################################################################################################################################
+y = ts2                                   # log-diff series (PeriodIndex)
+
+# 1) lags
+lags = pd.concat([y.shift(i) for i in range(1, 3)], axis=1)
+lags.columns = ["lag1", "lag2"]
+
+# 2) assemble DataFrame & drop *all* duplicates once
+full = (pd.concat([y, lags], axis=1)
+          .dropna())                       # rows with all vars present
+full = full.loc[~full.index.duplicated()]  # ← critical: unique index
+
+# 3) AR(2) coefficients + variance
+c0  = ar2_model.params["const"]
+φ1  = ar2_model.params["ar.L1"]
+φ2  = ar2_model.params["ar.L2"]
+σ2  = np.std(ar2_model.resid)
+
+# 4) estimation window 1993Q1–2009Q4
+train = full.loc["1993Q1":"2009Q4"]
+X_train = sm.add_constant(train[["lag1", "lag2"]], has_constant="add")
+XtX_inv = np.linalg.inv(X_train.T @ X_train)
+
+# 5) test window 2010Q1–2024Q4  (fallback if that slice is empty)
+test = full.loc["2010Q1":"2024Q4"]
+if test.empty:
+    test = full.loc[train.index[-1] + 1:]          # everything after train
+
+test = test.loc[~test.index.duplicated()]          # ensure unique again
+
+# 6) forecasts & 95 % PI
+fcst  = c0 + φ1*test["lag1"] + φ2*test["lag2"]
+X_pred = sm.add_constant(test[["lag1", "lag2"]], has_constant="add").to_numpy()
+quad   = (X_pred @ XtX_inv) * X_pred
+se_full= np.sqrt(np.maximum(0, σ2 * (1 + quad.sum(axis=1))))  # no NaNs
+
+upper = fcst + 1.96*se_full
+lower = fcst - 1.96*se_full
+y_test= test["RSFHFS"]
+
+# ------------ accuracy metrics ----------------------------------
+err   = y_test - fcst
+rmse  = np.sqrt(np.mean(err**2))
+mae   = np.mean(np.abs(err))
+mape  = np.mean(np.abs(err / y_test))
+smape = np.mean(2*np.abs(err)/(np.abs(y_test)+np.abs(fcst)))
+u1    = rmse / (np.sqrt((fcst**2).mean()) + np.sqrt((y_test**2).mean()))
+u2    = rmse / np.sqrt(np.mean((y_test - y.shift(1).loc[y_test.index])**2))
+bias  = ((fcst.mean() - y_test.mean())**2) / rmse**2
+var   = ((fcst.std()  - y_test.std()) **2) / rmse**2
+cov   = 1 - bias - var
+
+def qlabel(idx):
+    try:    return idx.strftime("%YQ%q")
+    except: return str(idx)
+
+# ------------ plot ----------------------------------------------
+fig, ax = plt.subplots(figsize=(14, 6))
+ax.plot(fcst,   lw=1.4, color="steelblue", label="YF_AR2")
+ax.plot(y_test, lw=1.2, color="seagreen",  label="Actuals")
+ax.plot(upper,  ls="--", color="peru",     lw=0.9, label="95 % PI")
+ax.plot(lower,  ls="--", color="peru",     lw=0.9)
+ax.legend(frameon=False, ncol=3)
+ax.set_ylabel("RSFHFS level (log)")
+ax.grid(axis="x", ls=":", alpha=.4)
+fig.autofmt_xdate()
+
+stats = [
+    "Forecast:  YF_AR2",
+    "Actual:    Y",
+    f"Forecast sample: {qlabel(y_test.index[0])} – {qlabel(y_test.index[-1])}",
+    f"Included observations: {len(y_test)}",
+    f"Root Mean Squared Error      {rmse:10.6f}",
+    f"Mean Absolute Error          {mae:10.6f}",
+    f"Mean Abs. Percent Error      {mape:10.6f}",
+    f"Theil Inequality Coef.       {u1:10.6f}",
+    f"  Bias Proportion            {bias:10.6f}",
+    f"  Variance Proportion        {var:10.6f}",
+    f"  Covariance Proportion      {cov:10.6f}",
+    f"Theil U2 Coefficient         {u2:10.6f}",
+    f"Symmetric MAPE               {smape:10.6f}",
+]
+ax.text(1.02, 0.98, "\n".join(stats),
+        transform=ax.transAxes, va="top", ha="left",
+        family="monospace", fontsize=9,
+        bbox=dict(boxstyle="round", fc="white", alpha=.9))
+
+plt.tight_layout()
+plt.show()
