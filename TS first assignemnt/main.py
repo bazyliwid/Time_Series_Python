@@ -2,6 +2,7 @@
 import numpy as np 
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import acf, pacf
 from statsmodels.stats.diagnostic import acorr_ljungbox
@@ -497,16 +498,19 @@ def test_normality(growthRate):
 test_normality(residuals)
 
 ################################################################################################################################################
-y = ts2                                   # log-diff series (PeriodIndex)
+y = np.log(data['RSFHFS']).diff().dropna()
+print(y.index)
+y = y.iloc[5:]
+print(y.index) 
+train_n = 64
+print(y)                                  # log-diff series (PeriodIndex)
 
 # 1) lags
 lags = pd.concat([y.shift(i) for i in range(1, 3)], axis=1)
 lags.columns = ["lag1", "lag2"]
 
 # 2) assemble DataFrame & drop *all* duplicates once
-full = (pd.concat([y, lags], axis=1)
-          .dropna())                       # rows with all vars present
-full = full.loc[~full.index.duplicated()]  # ← critical: unique index
+full = (pd.concat([y, lags], axis=1).dropna())                       # rows with all vars present
 
 # 3) AR(2) coefficients + variance
 c0  = ar2_model.params["const"]
@@ -515,16 +519,12 @@ c0  = ar2_model.params["const"]
 σ2  = np.std(ar2_model.resid)
 
 # 4) estimation window 1993Q1–2009Q4
-train = full.loc["1993Q1":"2009Q4"]
+train = full.iloc[:train_n]
 X_train = sm.add_constant(train[["lag1", "lag2"]], has_constant="add")
 XtX_inv = np.linalg.inv(X_train.T @ X_train)
 
 # 5) test window 2010Q1–2024Q4  (fallback if that slice is empty)
-test = full.loc["2010Q1":"2024Q4"]
-if test.empty:
-    test = full.loc[train.index[-1] + 1:]          # everything after train
-
-test = test.loc[~test.index.duplicated()]          # ensure unique again
+test = full.iloc[train_n:]
 
 # 6) forecasts & 95 % PI
 fcst  = c0 + φ1*test["lag1"] + φ2*test["lag2"]
@@ -548,25 +548,44 @@ bias  = ((fcst.mean() - y_test.mean())**2) / rmse**2
 var   = ((fcst.std()  - y_test.std()) **2) / rmse**2
 cov   = 1 - bias - var
 
-def qlabel(idx):
-    try:    return idx.strftime("%YQ%q")
-    except: return str(idx)
 
-# ------------ plot ----------------------------------------------
+q_idx = pd.period_range(start="2010Q1", periods=len(test), freq="Q")
+print(q_idx)
+
+test.index  = q_idx
+fcst.index  = q_idx           # predicted mean
+upper.index = q_idx           # upper PI
+lower.index = q_idx           # lower PI
+y_test      = test["RSFHFS"]  # make sure the 'actual' Series has it too
+y_test.index = q_idx
+
+for s in (fcst, upper, lower, y_test):
+    s.index = s.index.to_timestamp("Q")      # e.g. 2010Q1 → 2010-03-31
+
+# now build the plot as before …
 fig, ax = plt.subplots(figsize=(14, 6))
+
+# ── keep only the bottom x-axis, hide the one at the top ───────────
+
 ax.plot(fcst,   lw=1.4, color="steelblue", label="YF_AR2")
 ax.plot(y_test, lw=1.2, color="seagreen",  label="Actuals")
 ax.plot(upper,  ls="--", color="peru",     lw=0.9, label="95 % PI")
 ax.plot(lower,  ls="--", color="peru",     lw=0.9)
+
+# tidy x-axis: major ticks every 2 years, minor ticks every quarter
+ax.xaxis.set_major_locator(mdates.YearLocator(base=2))
+ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+ax.tick_params(axis="x", which="major", pad=7)
+
 ax.legend(frameon=False, ncol=3)
 ax.set_ylabel("RSFHFS level (log)")
-ax.grid(axis="x", ls=":", alpha=.4)
+# ax.grid(axis="x", ls=":", alpha=.4, which="both")
 fig.autofmt_xdate()
 
 stats = [
     "Forecast:  YF_AR2",
     "Actual:    Y",
-    f"Forecast sample: {qlabel(y_test.index[0])} – {qlabel(y_test.index[-1])}",
+    f"Forecast sample: 2010Q1 – 2024Q4)",
     f"Included observations: {len(y_test)}",
     f"Root Mean Squared Error      {rmse:10.6f}",
     f"Mean Absolute Error          {mae:10.6f}",
