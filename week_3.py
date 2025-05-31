@@ -194,3 +194,380 @@ ax.text(1.02, 0.98, "\n".join(stats),
 
 plt.tight_layout()
 plt.show()
+
+##################################################################
+# Forecast the growth rates:
+df["Growth"] = df["SALES"].diff()*100
+
+y  = df["Growth"]
+
+t = np.arange(len(y))                                # 0,1,2,…
+lags = pd.concat([y.shift(i) for i in range(1, 4)], axis=1)
+lags.columns = ["lag1", "lag2", "lag3"]
+
+data = (pd.concat([y,
+                   pd.Series(t, index=y.index, name="trend"),
+                   lags],
+                  axis=1)
+          .dropna())                                 # lose first 3 rows
+
+# ────────────────────────────────────────────────────────────────
+# 3│  first 20 years (80 obs) → estimation sample
+# ────────────────────────────────────────────────────────────────
+train_n = 80
+X_train = sm.add_constant(data.iloc[:train_n][["trend", "lag1", "lag2", "lag3"]])
+y_train = data.iloc[:train_n]["Growth"]
+
+ols_res = sm.OLS(y_train, X_train).fit()
+c0, c1, ϕ1, ϕ2, ϕ3 = ols_res.params
+σ2 = ols_res.scale                                 # residual variance
+print(ols_res.summary())
+
+# (X'X)⁻¹ for the variance-inflation term
+XtX_inv = np.linalg.inv(X_train.to_numpy().T @ X_train.to_numpy())
+
+# ────────────────────────────────────────────────────────────────
+# 4│  one-step recursive forecasts for the test period
+# ────────────────────────────────────────────────────────────────
+test = data.iloc[train_n:]                          # after the first 80 obs
+trend_pred = test["trend"] + 1                      # t+1 trend
+fcst = (c0
+        + c1 * trend_pred
+        + ϕ1 * test["lag1"]
+        + ϕ2 * test["lag2"]
+        + ϕ3 * test["lag3"])
+
+# ── build the same design matrix used in forecasting
+X_pred = np.column_stack([np.ones(len(test)),
+                          trend_pred,
+                          test[["lag1", "lag2", "lag3"]]])
+
+# full forecast s.e. = √[ σ² · (1 + xᵀ(X'X)⁻¹x) ]
+se_full = np.sqrt(σ2 * (1 + np.sum((X_pred @ XtX_inv) * X_pred, axis=1)))
+
+upper = fcst + 1.96 * se_full
+lower = fcst - 1.96 * se_full
+y_test = test["Growth"]
+
+# ────────────────────────────────────────────────────────────────
+# 5│  accuracy measures
+# ────────────────────────────────────────────────────────────────
+err  = y_test - fcst
+rmse = np.sqrt(np.mean(err**2))
+mae  = np.mean(np.abs(err))
+mape = np.mean(np.abs(err / y_test))
+smape= np.mean(2 * np.abs(err) / (np.abs(y_test) + np.abs(fcst)))
+u1   = rmse / (np.sqrt((fcst**2).mean()) + np.sqrt((y_test**2).mean()))
+u2   = rmse / np.sqrt(np.mean((y_test - y.shift(1).loc[y_test.index])**2))
+bias = ((fcst.mean() - y_test.mean())**2) / rmse**2
+var  = ((fcst.std()  - y_test.std()) **2) / rmse**2
+cov  = 1 - bias - var
+
+# ────────────────────────────────────────────────────────────────
+# 6│  plot
+# ────────────────────────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(14, 6))
+
+ax.plot(fcst,   lw=1.4, color="steelblue", label="YF_AR3T")
+ax.plot(y_test, lw=1.2, color="seagreen",  label="Actuals")
+ax.plot(upper,  ls="--", color="peru",  lw=0.9, label="95 % PI")
+ax.plot(lower,  ls="--", color="peru",  lw=0.9)
+ax.legend(frameon=False, ncol=3)
+ax.set_ylabel("Log level"); ax.grid(axis="x", ls=":", alpha=.4)
+fig.autofmt_xdate()
+
+stats = [
+    "Forecast:  Growth rates",
+    "Actual:    Y",
+    f"Forecast sample: {y_test.index[0].strftime('%YQ%q')} "
+    f"{y_test.index[-1].strftime('%YQ%q')}",
+    f"Included observations: {len(y_test)}",
+    f"Root Mean Squared Error      {rmse:10.6f}",
+    f"Mean Absolute Error          {mae:10.6f}",
+    f"Mean Abs. Percent Error      {mape:10.6f}",
+    f"Theil Inequality Coef.       {u1:10.6f}",
+    f"  Bias Proportion            {bias:10.6f}",
+    f"  Variance Proportion        {var:10.6f}",
+    f"  Covariance Proportion      {cov:10.6f}",
+    f"Theil U2 Coefficient         {u2:10.6f}",
+    f"Symmetric MAPE               {smape:10.6f}",
+]
+ax.text(1.02, 0.98, "\n".join(stats),
+        transform=ax.transAxes, va="top", ha="left",
+        family="monospace", fontsize=9,
+        bbox=dict(boxstyle="round", fc="white", alpha=.9))
+
+plt.tight_layout()
+plt.show()
+
+######################################################################
+# Forecast the growth rates:
+y  = data["Growth"]
+                              # 0,1,2,…
+lags = pd.concat([y.shift(i) for i in range(1, 4)], axis=1)
+lags.columns = ["lag1", "lag2", "lag3"]
+
+data = (pd.concat([y,lags],axis=1).dropna())                                 # lose first 3 rows
+
+# ────────────────────────────────────────────────────────────────
+# 3│  first 20 years (80 obs) → estimation sample
+# ────────────────────────────────────────────────────────────────
+train_n = 80
+X_train = sm.add_constant(data.iloc[:train_n][[ "lag1", "lag2", "lag3"]])
+y_train = data.iloc[:train_n]["Growth"]
+
+ols_res = sm.OLS(y_train, X_train).fit()
+c0, ϕ1, ϕ2, ϕ3 = ols_res.params
+σ2 = ols_res.scale                                 # residual variance
+print(ols_res.summary())
+
+# (X'X)⁻¹ for the variance-inflation term
+XtX_inv = np.linalg.inv(X_train.to_numpy().T @ X_train.to_numpy())
+
+# ────────────────────────────────────────────────────────────────
+# 4│  one-step recursive forecasts for the test period
+# ────────────────────────────────────────────────────────────────
+test = data.iloc[train_n:]                          # after the first 80 obs                   # t+1 trend
+fcst = (c0
+        + ϕ1 * test["lag1"]
+        + ϕ2 * test["lag2"]
+        + ϕ3 * test["lag3"])
+
+# ── build the same design matrix used in forecasting
+X_pred = np.column_stack([np.ones(len(test)),
+                          test[["lag1", "lag2", "lag3"]]])
+
+# full forecast s.e. = √[ σ² · (1 + xᵀ(X'X)⁻¹x) ]
+se_full = np.sqrt(σ2 * (1 + np.sum((X_pred @ XtX_inv) * X_pred, axis=1)))
+
+upper = fcst + 1.96 * se_full
+lower = fcst - 1.96 * se_full
+y_test = test["Growth"]
+
+# ────────────────────────────────────────────────────────────────
+# 5│  accuracy measures
+# ────────────────────────────────────────────────────────────────
+err  = y_test - fcst
+rmse = np.sqrt(np.mean(err**2))
+mae  = np.mean(np.abs(err))
+mape = np.mean(np.abs(err / y_test))
+smape= np.mean(2 * np.abs(err) / (np.abs(y_test) + np.abs(fcst)))
+u1   = rmse / (np.sqrt((fcst**2).mean()) + np.sqrt((y_test**2).mean()))
+u2   = rmse / np.sqrt(np.mean((y_test - y.shift(1).loc[y_test.index])**2))
+bias = ((fcst.mean() - y_test.mean())**2) / rmse**2
+var  = ((fcst.std()  - y_test.std()) **2) / rmse**2
+cov  = 1 - bias - var
+
+# ────────────────────────────────────────────────────────────────
+# 6│  plot
+# ────────────────────────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(14, 6))
+
+ax.plot(fcst,   lw=1.4, color="steelblue", label="YF_AR3T")
+ax.plot(y_test, lw=1.2, color="seagreen",  label="Actuals")
+ax.plot(upper,  ls="--", color="peru",  lw=0.9, label="95 % PI")
+ax.plot(lower,  ls="--", color="peru",  lw=0.9)
+ax.legend(frameon=False, ncol=3)
+ax.set_ylabel("Log level"); ax.grid(axis="x", ls=":", alpha=.4)
+fig.autofmt_xdate()
+
+stats = [
+    "Forecast:  Growth rates",
+    "Actual:    Y",
+    f"Forecast sample: {y_test.index[0].strftime('%YQ%q')} "
+    f"{y_test.index[-1].strftime('%YQ%q')}",
+    f"Included observations: {len(y_test)}",
+    f"Root Mean Squared Error      {rmse:10.6f}",
+    f"Mean Absolute Error          {mae:10.6f}",
+    f"Mean Abs. Percent Error      {mape:10.6f}",
+    f"Theil Inequality Coef.       {u1:10.6f}",
+    f"  Bias Proportion            {bias:10.6f}",
+    f"  Variance Proportion        {var:10.6f}",
+    f"  Covariance Proportion      {cov:10.6f}",
+    f"Theil U2 Coefficient         {u2:10.6f}",
+    f"Symmetric MAPE               {smape:10.6f}",
+]
+ax.text(1.02, 0.98, "\n".join(stats),
+        transform=ax.transAxes, va="top", ha="left",
+        family="monospace", fontsize=9,
+        bbox=dict(boxstyle="round", fc="white", alpha=.9))
+
+plt.tight_layout()
+plt.show()
+
+
+##################################################################################
+# Forectas with the rolling window and a trend 
+df = pd.read_excel("/Users/bazyliwidawski/Documents/Block 5, Year 3/Time Series Analysis/Python replication/USMSSALES.xlsx")
+df["Quarter"] = pd.PeriodIndex(df["Quarter"], freq="Q").to_timestamp(how="e")
+df = df.set_index("Quarter").asfreq("QE-DEC")
+
+# Δlog × 100  (quarter-on-quarter growth in per-cent)
+df["Growth"] = np.log(df["SALES"]).diff()*100
+
+# build 3 lags of the growth rate
+for i in range(1, 4):
+    df[f"lag{i}"] = df["Growth"].shift(i)
+
+# global linear-time-trend (will be re-based inside each window)
+df["trend"] = np.arange(len(df))
+
+# discard the first three rows that have missing lags
+df = df.dropna()
+
+# ------------------------------------------------------------------
+# 1│  ROLLING 1-STEP-AHEAD FORECASTS  (window length = 80 obs) ─────
+# ------------------------------------------------------------------
+WINDOW = 80                                      # rolling-window width
+target = "Growth"
+regressors = ["trend", "lag1", "lag2", "lag3"]
+
+fcst = []                                        # point forecasts
+se   = []                                        # forecast std. errors
+idx  = []                                        # forecast dates
+
+for t in range(WINDOW, len(df)):                 # t is the date to predict
+    # --- training window: last 80 obs that end at t-1 -----------------
+    train = df.iloc[t-WINDOW:t].copy()
+
+    # re-base the deterministic trend inside the window so that      │
+    # it runs 0,1,…,79 each time — this keeps the trend coefficient   │
+    # on a comparable scale across windows.                           │
+    train["trend_win"] = np.arange(len(train))
+    X_train = sm.add_constant(train[["trend_win", "lag1", "lag2", "lag3"]])
+    y_train = train[target]
+
+    res = sm.OLS(y_train, X_train).fit()
+
+    # --- build x for the 1-step-ahead forecast (date t) --------------
+    # We already have lag1, lag2, lag3 for date t in the main DataFrame.
+    x_next = np.r_[
+        1,                                  # constant
+        len(train),                         # trend_win(t) = 80
+        df.iloc[t-1][["lag1", "lag2", "lag3"]].to_numpy()
+    ]
+
+    y_hat = x_next @ res.params             # point forecast
+    mse   = res.mse_resid
+    XtX_inv = np.linalg.inv(X_train.T @ X_train)
+    se_hat = np.sqrt(mse * (1 + x_next @ XtX_inv @ x_next))
+
+    fcst.append(y_hat)
+    se.append(se_hat)
+    idx.append(df.index[t])
+
+# wrap up
+fcst  = pd.Series(fcst, index=idx, name="Forecast")
+upper = fcst + 1.96*np.array(se)
+lower = fcst - 1.96*np.array(se)
+actual = df.loc[idx, target]
+
+# 95 % interval
+fig, ax = plt.subplots(figsize=(14, 6))
+ax.plot(actual, lw=1.2,  color="red",  label="Actual")
+ax.plot(fcst,   lw=1.4,  color="purple", label="Rolling-window forecast")
+ax.plot(upper,  ls="--", color="peru",      label="95 % PI")
+ax.plot(lower,  ls="--", color="peru")
+ax.legend(frameon=False, ncol=3)
+ax.set_ylabel("Δlog(SALES) × 100  (q/q, %)")
+ax.grid(axis="x", ls=":", alpha=.4)
+fig.autofmt_xdate()
+plt.tight_layout()
+plt.show()
+
+# accuracy metrics
+err  = actual - fcst
+rmse = np.sqrt(np.mean(err**2))
+mae  = np.mean(np.abs(err))
+mape = np.mean(np.abs(err / actual))
+smape= np.mean(2*np.abs(err)/(np.abs(actual)+np.abs(fcst)))
+print(f"Rolling-window RMSE  : {rmse:8.4f}")
+print(f"Rolling-window MAE   : {mae:8.4f}")
+print(f"Rolling-window sMAPE : {smape:8.4f}")
+
+
+##################################################################################
+# Forectas with the rolling window without trend 
+df = pd.read_excel("/Users/bazyliwidawski/Documents/Block 5, Year 3/Time Series Analysis/Python replication/USMSSALES.xlsx")
+df["Quarter"] = pd.PeriodIndex(df["Quarter"], freq="Q").to_timestamp(how="e")
+df = df.set_index("Quarter").asfreq("QE-DEC")
+
+# Δlog × 100  (quarter-on-quarter growth in per-cent)
+df["Growth"] = np.log(df["SALES"]).diff()*100
+
+# build 3 lags of the growth rate
+for i in range(1, 4):
+    df[f"lag{i}"] = df["Growth"].shift(i)
+
+# global linear-time-trend (will be re-based inside each window)
+
+# discard the first three rows that have missing lags
+df = df.dropna()
+
+# ------------------------------------------------------------------
+# 1│  ROLLING 1-STEP-AHEAD FORECASTS  (window length = 80 obs) ─────
+# ------------------------------------------------------------------
+WINDOW = 80                                      # rolling-window width
+target = "Growth"
+regressors = ["lag1", "lag2", "lag3"]
+
+fcst = []                                        # point forecasts
+se   = []                                        # forecast std. errors
+idx  = []                                        # forecast dates
+
+for t in range(WINDOW, len(df)):                 # t is the date to predict
+    # --- training window: last 80 obs that end at t-1 -----------------
+    train = df.iloc[t-WINDOW:t].copy()
+
+    # re-base the deterministic trend inside the window so that      │
+    # it runs 0,1,…,79 each time — this keeps the trend coefficient   │
+    # on a comparable scale across windows.                           │
+    X_train = sm.add_constant(train[[ "lag1", "lag2", "lag3"]])
+    y_train = train[target]
+
+    res = sm.OLS(y_train, X_train).fit()
+
+    # --- build x for the 1-step-ahead forecast (date t) --------------
+    # We already have lag1, lag2, lag3 for date t in the main DataFrame.
+    x_next = np.r_[
+        1,                                  # constant
+        df.iloc[t-1][["lag1", "lag2", "lag3"]].to_numpy()
+    ]
+
+    y_hat = x_next @ res.params             # point forecast
+    mse   = res.mse_resid
+    XtX_inv = np.linalg.inv(X_train.T @ X_train)
+    se_hat = np.sqrt(mse * (1 + x_next @ XtX_inv @ x_next))
+
+    fcst.append(y_hat)
+    se.append(se_hat)
+    idx.append(df.index[t])
+
+# wrap up
+fcst  = pd.Series(fcst, index=idx, name="Forecast")
+upper = fcst + 1.96*np.array(se)
+lower = fcst - 1.96*np.array(se)
+actual = df.loc[idx, target]
+
+# 95 % interval
+fig, ax = plt.subplots(figsize=(14, 6))
+ax.plot(actual, lw=1.2,  color="red",  label="Actual")
+ax.plot(fcst,   lw=1.4,  color="purple", label="Rolling-window forecast")
+ax.plot(upper,  ls="--", color="peru",      label="95 % PI")
+ax.plot(lower,  ls="--", color="peru")
+ax.legend(frameon=False, ncol=3)
+ax.set_ylabel("Δlog(SALES) × 100  (q/q, %)")
+ax.grid(axis="x", ls=":", alpha=.4)
+fig.autofmt_xdate()
+plt.tight_layout()
+plt.show()
+
+# accuracy metrics
+err  = actual - fcst
+rmse = np.sqrt(np.mean(err**2))
+mae  = np.mean(np.abs(err))
+mape = np.mean(np.abs(err / actual))
+smape= np.mean(2*np.abs(err)/(np.abs(actual)+np.abs(fcst)))
+print(f"Rolling-window RMSE  : {rmse:8.4f}")
+print(f"Rolling-window MAE   : {mae:8.4f}")
+print(f"Rolling-window sMAPE : {smape:8.4f}")
